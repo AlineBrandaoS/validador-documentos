@@ -114,4 +114,4 @@ Com `claude-sonnet-5`, fica em torno de **US$ 0,01 por página** analisada. É u
 
 ## Privacidade
 
-As imagens são enviadas à API da Anthropic para análise. O prompt pede que a IA **não transcreva** dados pessoais na resposta, e a planilha traz apenas o status e o motivo. Não compartilhe o arquivo `.env`.
+As imagens são enviadas à API da Anthropic para análise. O prompt pede que a IA **não transcreva** dados pessoais na resposta, e a planilha traz apenas o status e o motivo.
