@@ -1,0 +1,9 @@
+pymupdf
+pillow
+opencv-python
+numpy
+pytesseract
+anthropic
+pandas
+openpyxl
+python-dotenv
