@@ -76,7 +76,7 @@ Além da legibilidade, o programa confere **o que está faltando** para cada col
 
 **Regras por função (`regras_funcoes.xlsx`):** é uma tabela com uma função por linha, onde você marca **X** nas NRs e RACs que ela exige. O botão **Regras das funções** da janela abre essa tabela. Quando aparece uma função nova, a IA sugere as regras e marca a linha em amarelo como **IA - REVISAR**. Confira e troque a ORIGEM para **CONFIRMADA**. Enquanto não for confirmada, a pendência aparece com o aviso "regra sugerida pela IA — confirmar".
 
-**Nome dos arquivos:** siga o padrão do SGC, com uma pasta por colaborador e o tipo no começo do nome (`NR18_FILIPE MATTO.pdf`, `RAC01_...`, `PRO RAC 01_...`, `ASO_...`, `RG_...`, `CTPS_...`, `FICHA EPI_...`, `OS_...`, `ART_...`, `PST_...`, `FOTO_...`, `RESIDENCIA_...`, `ESCOLARIDADE_...`). Se o nome não seguir o padrão, a IA tenta reconhecer o documento pelo conteúdo.
+**Nome dos arquivos:** siga o padrão do SGC, com uma pasta por colaborador e o tipo no começo do nome (`NR18_JOAO DA SILVA.pdf`, `RAC01_...`, `PRO RAC 01_...`, `ASO_...`, `RG_...`, `CTPS_...`, `FICHA EPI_...`, `OS_...`, `ART_...`, `PST_...`, `FOTO_...`, `RESIDENCIA_...`, `ESCOLARIDADE_...`). Se o nome não seguir o padrão, a IA tenta reconhecer o documento pelo conteúdo.
 
 Os documentos da empresa (PCMSO, PGR, ART do PGR) não entram nesse checklist, porque são por empresa e não por colaborador.
 
