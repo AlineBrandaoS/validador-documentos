@@ -77,8 +77,15 @@ COLUNAS_REGRAS = (["FUNÇÃO", "NR11", "NR12", "NR35", "TREINAMENTO EQUIPAMENTO"
                   + [f"RAC{n:02d}" for n in RACS] + ["ORIGEM", "JUSTIFICATIVA"])
  
 OK, FALTANDO, NAO_SE_APLICA = "OK", "FALTANDO", "—"
+NAO_EXIGIDA = "NÃO EXIGIDA (ASO)"
+DESCR_DISPENSADOS = {
+    "NR35": "Certificado NR35",
+    "RAC01": "Certificado RAC 01 – Trabalho em Altura",
+    "PRO_RAC01": "PRO RAC 01 – Trabalho em Altura",
+}
 ILEGIVEL_REENVIAR = "ILEGÍVEL"
-CORES = {OK: "C6EFCE", FALTANDO: "FFC7CE", ILEGIVEL_REENVIAR: "F4B084", v.REVISAR: "FFEB9C"}
+CORES = {OK: "C6EFCE", FALTANDO: "FFC7CE", ILEGIVEL_REENVIAR: "F4B084", v.REVISAR: "FFEB9C",
+         "APTO": "C6EFCE", "INAPTO": "FFC7CE", "NÃO CONSTA": "FFEB9C", "NÃO EXIGIDA (ASO)": "D9D9D9"}
  
  
 def normalizar(texto: Any) -> str:
@@ -302,8 +309,10 @@ def documentos_exigidos(pessoa: dict, regra: dict | None) -> list[tuple[str, str
     for chave in ("NR11", "NR12", "TREINAMENTO_EQUIPAMENTO"):
         if regra.get(chave):
             exigidos.append((chave, DOCS_CONDICIONAIS[chave] + nota, "Segurança"))
-    if regra.get("NR35") or pessoa.get("apto_nr35"):
-        motivo = "" if regra.get("NR35") else " (APTO NR35 na planilha)"
+    if regra.get("NR35") or pessoa.get("apto_nr35") or pessoa.get("aso_altura"):
+        motivo = ("" if regra.get("NR35") else
+                  " (ASO apto para trabalho em altura)" if pessoa.get("aso_altura")
+                  else " (APTO NR35 na planilha)")
         exigidos.append(("NR35", DOCS_CONDICIONAIS["NR35"] + (motivo or nota), "Segurança"))
     racs = regra.get("racs") or []
     for n in racs:
@@ -397,7 +406,122 @@ def situacao_do_documento(arquivos: list[dict]) -> tuple[str, str]:
  
  
 # =============================================================================
-# 5. CHECKLIST
+# 5. APTIDÃO NO ASO (apto / inapto, trabalho em altura, espaço confinado)
+# =============================================================================
+ 
+VERSAO_ASO = "1"
+APTO, INAPTO, NAO_CONSTA = "APTO", "INAPTO", "NÃO CONSTA"
+ 
+PROMPT_ASO = """Você é técnico de segurança do trabalho conferindo um ASO (Atestado de Saúde \
+Ocupacional) para mobilização em obra. Leia as páginas e informe:
+- apto_funcao: conclusão geral do ASO (APTO ou INAPTO para a função). Use \
+NAO_IDENTIFICADO se não der para ler ou não houver conclusão.
+- trabalho_altura: APTO se o ASO declara aptidão para trabalho em altura (NR35); \
+INAPTO se declara inaptidão; NAO_CONSTA se o ASO não menciona trabalho em altura.
+- espaco_confinado: mesma lógica para espaço confinado (NR33).
+- data_exame no formato DD/MM/AAAA (vazio se não achar).
+Não deduza: marque APTO só se estiver escrito ou assinalado no documento. \
+confianca = sua certeza (0 a 1) sobre essas leituras. Não transcreva dados pessoais."""
+ 
+FERRAMENTA_ASO = {
+    "name": "registrar_aso",
+    "description": "Registra as aptidões declaradas no ASO.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "apto_funcao": {"type": "string", "enum": ["APTO", "INAPTO", "NAO_IDENTIFICADO"]},
+            "trabalho_altura": {"type": "string", "enum": ["APTO", "INAPTO", "NAO_CONSTA"]},
+            "espaco_confinado": {"type": "string", "enum": ["APTO", "INAPTO", "NAO_CONSTA"]},
+            "data_exame": {"type": "string"},
+            "confianca": {"type": "number", "minimum": 0, "maximum": 1},
+            "observacao": {"type": "string"},
+        },
+        "required": ["apto_funcao", "trabalho_altura", "espaco_confinado", "data_exame",
+                     "confianca", "observacao"],
+    },
+}
+ 
+ 
+def ler_aso(caminho: Path, cache: Any) -> dict:
+    """Pede à IA as aptidões do ASO. Guarda no cache para não pagar duas vezes."""
+    chave = f"ASO|{v.Cache.chave(caminho)}|a{VERSAO_ASO}"
+    guardado = cache.obter(chave)
+    if guardado:
+        return guardado
+    paginas = v.carregar_paginas(caminho)[:4]
+    conteudo: Any = [{"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
+                                                   "data": v.imagem_para_base64(p)}} for p in paginas]
+    conteudo.append({"type": "text", "text": "Leia as aptidões deste ASO."})
+    ferramentas: Any = [FERRAMENTA_ASO]
+    escolha: Any = {"type": "tool", "name": "registrar_aso"}
+    mensagens: Any = [{"role": "user", "content": conteudo}]
+    resposta = v.obter_cliente_ia().messages.create(
+        model=v.MODELO_IA, max_tokens=800, system=PROMPT_ASO,
+        tools=ferramentas, tool_choice=escolha, messages=mensagens)
+    dados: Any = {}
+    for bloco in resposta.content:
+        if getattr(bloco, "type", None) == "tool_use":
+            dados = getattr(bloco, "input", None) or {}
+    traduz = {"APTO": APTO, "INAPTO": INAPTO, "NAO_CONSTA": NAO_CONSTA, "NAO_IDENTIFICADO": NAO_CONSTA}
+    try:
+        confianca = float(dados.get("confianca", 0))
+    except (TypeError, ValueError):
+        confianca = 0.0
+    resultado = {
+        "apto": traduz.get(str(dados.get("apto_funcao")), NAO_CONSTA),
+        "altura": traduz.get(str(dados.get("trabalho_altura")), NAO_CONSTA),
+        "confinado": traduz.get(str(dados.get("espaco_confinado")), NAO_CONSTA),
+        "data": str(dados.get("data_exame") or ""),
+        "confianca": confianca,
+        "obs": str(dados.get("observacao") or ""),
+        "arquivo": caminho.name,
+    }
+    cache.salvar(chave, resultado)
+    return resultado
+ 
+ 
+def aptidao_do_colaborador(arquivos_aso: list[dict], raiz: Path, cache: Any, log) -> dict | None:
+    """Lê o(s) ASO(s) legível(is) do colaborador e devolve a aptidão encontrada."""
+    for arquivo in arquivos_aso:
+        if arquivo["Status"] == v.ILEGIVEL:
+            continue
+        try:
+            return ler_aso(raiz / arquivo["Caminho"], cache)
+        except Exception as erro:
+            log(f"AVISO: não consegui ler a aptidão do ASO {arquivo['Arquivo']} ({erro}).")
+            return {"apto": NAO_CONSTA, "altura": NAO_CONSTA, "confinado": NAO_CONSTA, "data": "",
+                    "confianca": 0.0, "obs": f"Falha na leitura: {erro}", "arquivo": arquivo["Arquivo"]}
+    return None
+ 
+ 
+def pendencias_do_aso(pessoa: dict, aso: dict | None, precisa_confinado: bool) -> list[dict]:
+    """Confere a aptidão do ASO contra o que a função exige."""
+    base = {"Colaborador": pessoa["nome"], "Função": pessoa["funcao"] or "-", "Grupo": "ASO"}
+    if aso is None:
+        return []  # sem ASO legível: a falta do ASO já aparece no checklist
+    detalhe = f"{aso['arquivo']}" + (f" | exame {aso['data']}" if aso["data"] else "") + \
+              (f" | {aso['obs']}" if aso["obs"] else "")
+    if aso["confianca"] < v.CONFIANCA_MINIMA:
+        return [{**base, "Documento": "Aptidão no ASO", "Situação": v.REVISAR,
+                 "O que fazer": "Conferir manualmente a aptidão no ASO (IA em dúvida)", "Detalhe": detalhe}]
+    lista = []
+    if aso["apto"] == INAPTO:
+        lista.append({**base, "Documento": "ASO: colaborador INAPTO para a função", "Situação": INAPTO,
+                      "O que fazer": "Não mobilizar. Verificar com o SESMT/médico do PCMSO",
+                      "Detalhe": detalhe})
+    elif aso["apto"] == NAO_CONSTA:
+        lista.append({**base, "Documento": "ASO sem conclusão de apto/inapto", "Situação": v.REVISAR,
+                      "O que fazer": "Conferir o ASO manualmente", "Detalhe": detalhe})
+    if precisa_confinado and aso["confinado"] != APTO:
+        texto = ("ASO declara INAPTO para espaço confinado" if aso["confinado"] == INAPTO
+                 else "ASO não traz aptidão para espaço confinado")
+        lista.append({**base, "Documento": texto, "Situação": aso["confinado"],
+                      "O que fazer": "Solicitar ASO com aptidão para espaço confinado", "Detalhe": detalhe})
+    return lista
+ 
+ 
+# =============================================================================
+# 6. CHECKLIST
 # =============================================================================
  
 def gerar_checklist(resultados: list[dict], raiz: Path, planilha: Path, destino: Path,
@@ -426,6 +550,10 @@ def gerar_checklist(resultados: list[dict], raiz: Path, planilha: Path, destino:
             por_pasta.setdefault(normalizar(r["Colaborador"]), []).append(r)
     pastas_usadas: set[str] = set()
  
+    cache_aso = v.Cache(raiz / "_cache_validador.json") if usar_ia else None
+    if usar_ia:
+        log("Lendo a aptidão (apto / trabalho em altura) nos ASOs…")
+ 
     matriz, pendencias = [], []
     for pessoa in pessoas:
         chave_nome = normalizar(pessoa["nome"])
@@ -438,7 +566,6 @@ def gerar_checklist(resultados: list[dict], raiz: Path, planilha: Path, destino:
             pastas_usadas.add(pasta)
  
         regra = achar_regra(pessoa["funcao"], regras) if pessoa["funcao"] else None
-        exigidos = documentos_exigidos(pessoa, regra)
  
         mapa: dict[str, list[dict]] = {}
         for arquivo in arquivos:
@@ -452,8 +579,32 @@ def gerar_checklist(resultados: list[dict], raiz: Path, planilha: Path, destino:
             for chave in pelo_nome | chaves_da_ia(arquivo):
                 mapa.setdefault(chave, []).append(arquivo)
  
+        # Aptidão do ASO manda na NR35 (e na RAC 01 - Trabalho em Altura):
+        #   ASO apto para altura     -> NR35 exigida, mesmo que a função não peça
+        #   ASO não apto / não consta -> NR35 e RAC 01 NÃO são exigidas (não vai trabalhar em altura)
+        #   sem ASO ou IA em dúvida  -> vale a regra da função
+        aso = aptidao_do_colaborador(mapa.get("ASO", []), raiz, cache_aso, log) if cache_aso else None
+        dispensados: list[str] = []
+        if aso and aso["confianca"] >= v.CONFIANCA_MINIMA:
+            if aso["altura"] == APTO:
+                pessoa = {**pessoa, "aso_altura": True}
+            else:
+                queria = bool((regra or {}).get("NR35")) or pessoa.get("apto_nr35")
+                racs = list((regra or {}).get("racs") or [])
+                if queria:
+                    dispensados.append("NR35")
+                if 1 in racs:
+                    dispensados += ["RAC01", "PRO_RAC01"]
+                pessoa = {**pessoa, "apto_nr35": False}
+                if regra:
+                    regra = {**regra, "NR35": False, "racs": [n for n in racs if n != 1]}
+        exigidos = documentos_exigidos(pessoa, regra)
+        codigos = {c for c, _, _ in exigidos}
+ 
         linha: dict[str, Any] = {"Colaborador": pessoa["nome"], "Função": pessoa["funcao"] or "-",
-                                 "Pasta encontrada": (arquivos[0]["Colaborador"] if arquivos else "NÃO ENCONTRADA")}
+                                 "Pasta encontrada": (arquivos[0]["Colaborador"] if arquivos else "NÃO ENCONTRADA"),
+                                 "ASO: aptidão": aso["apto"] if aso else "-",
+                                 "ASO: altura": aso["altura"] if aso else "-"}
         if not arquivos:
             pendencias.append({"Colaborador": pessoa["nome"], "Função": pessoa["funcao"] or "-",
                                "Grupo": "Pasta", "Documento": "Pasta do colaborador não encontrada",
@@ -472,6 +623,9 @@ def gerar_checklist(resultados: list[dict], raiz: Path, planilha: Path, destino:
                 pendencias.append({"Colaborador": pessoa["nome"], "Função": pessoa["funcao"] or "-",
                                    "Grupo": grupo, "Documento": descricao, "Situação": situacao,
                                    "O que fazer": acao, "Detalhe": detalhe})
+        pend_aso = pendencias_do_aso(pessoa, aso, precisa_confinado="RAC06" in codigos)
+        pendencias.extend(pend_aso)
+        faltas += len(pend_aso)
         if not pessoa["funcao"]:
             pendencias.append({"Colaborador": pessoa["nome"], "Função": "-", "Grupo": "Planilha",
                                "Documento": "Função não informada", "Situação": v.REVISAR,
@@ -481,9 +635,11 @@ def gerar_checklist(resultados: list[dict], raiz: Path, planilha: Path, destino:
                                "Documento": "Função sem regra de NR/RAC", "Situação": v.REVISAR,
                                "O que fazer": f"Cadastrar a função em {ARQUIVO_REGRAS.name}",
                                "Detalhe": "Conferidos só os documentos obrigatórios para todos"})
+        for chave in dispensados:
+            linha[chave] = NAO_EXIGIDA
         linha["Pendências"] = faltas
         linha["Situação geral"] = "COMPLETO" if faltas == 0 else "PENDENTE"
-        linha["_exigidos"] = exigidos
+        linha["_exigidos"] = exigidos + [(c, DESCR_DISPENSADOS[c], "Segurança") for c in dispensados]
         matriz.append(linha)
  
     for pasta, arquivos in por_pasta.items():
@@ -516,6 +672,7 @@ def salvar_checklist(destino: Path, matriz: list[dict], pendencias: list[dict],
     tabela = pd.DataFrame([
         {"Colaborador": m["Colaborador"], "Função": m["Função"], "Situação geral": m["Situação geral"],
          "Pendências": m["Pendências"], "Pasta encontrada": m["Pasta encontrada"],
+         "ASO: aptidão": m["ASO: aptidão"], "ASO: altura": m["ASO: altura"],
          **{titulos[c]: m.get(c, NAO_SE_APLICA) for c in colunas}}
         for m in matriz])
     tabela_pend = pd.DataFrame(pendencias, columns=["Colaborador", "Função", "Grupo", "Documento",
@@ -559,8 +716,10 @@ def salvar_checklist(destino: Path, matriz: list[dict], pendencias: list[dict],
     aba_check.column_dimensions["C"].width = 12
     aba_check.column_dimensions["D"].width = 11
     aba_check.column_dimensions["E"].width = 24
+    aba_check.column_dimensions["F"].width = 12
+    aba_check.column_dimensions["G"].width = 12
     aba_check.row_dimensions[1].height = 45
-    for idx in range(6, 6 + len(colunas)):
+    for idx in range(8, 8 + len(colunas)):
         aba_check.column_dimensions[get_column_letter(idx)].width = 12
  
     # Legenda das colunas
@@ -573,7 +732,8 @@ def salvar_checklist(destino: Path, matriz: list[dict], pendencias: list[dict],
     for i, (sit, txt) in enumerate([(OK, "entregue e legível"), (FALTANDO, "não encontrado na pasta"),
                                     (ILEGIVEL_REENVIAR, "entregue, mas ilegível: pedir de novo"),
                                     (v.REVISAR, "conferir manualmente"),
-                                    (NAO_SE_APLICA, "não exigido para esta função")]):
+                                    (NAO_SE_APLICA, "não exigido para esta função"),
+                                    (NAO_EXIGIDA, "dispensado: ASO não apto para trabalho em altura")]):
         c = aba_check.cell(row=fim + i, column=1, value=sit)
         if sit in CORES:
             c.fill = PatternFill("solid", fgColor=CORES[sit])
